@@ -13,14 +13,13 @@ import (
 
 func init() {
 	dnsserver.Directives = []string{
-		//"log",
 		"hack_forward",
 	}
 }
 
 func main() {
-	reqs := []string{"seznam.cz"}
-	//reqs := []string{"seznam.cz", "google.com", "atlas.cz", "example.com", "zive.cz"}
+	//reqs := []string{"seznam.cz"}
+	reqs := []string{"seznam.cz", "google.com", "atlas.cz", "example.com", "zive.cz"}
 	time.AfterFunc(1000*time.Millisecond, func() {
 		for _, req := range reqs {
 			cmd := exec.Command("dig", "@localhost", req)
@@ -37,29 +36,6 @@ func main() {
 			time.Sleep(1000 * time.Millisecond)
 		}
 	})
+
 	coremain.Run()
 }
-
-//func main() {
-//	dp := Pipe{
-//		timeout: time.Second * 5,
-//	}
-//
-//	err := dp.init()
-//	if err != nil {
-//		fmt.Printf("Initialization error: %v\n", err)
-//		return
-//	}
-//
-//	// Example usage
-//	req := new(dns.Msg)
-//	req.SetQuestion("example.com.", dns.TypeA)
-//
-//	err, resp := dp.process(req)
-//	if err != nil {
-//		fmt.Printf("Processing error: %v\n", err)
-//		return
-//	}
-//
-//	fmt.Printf("Response: %v\n", resp)
-//}

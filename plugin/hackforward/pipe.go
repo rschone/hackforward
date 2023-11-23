@@ -40,6 +40,7 @@ type Pipe struct {
 
 func NewPipe(driver PipeDriver, primary bool, config ConnConfig) *Pipe {
 	p := Pipe{
+		id:              int(pipeIDGen.Add(1)),
 		primary:         primary,
 		cache:           SenderCache{cache: make(map[uint16]*Sender)},
 		driver:          driver,
@@ -52,8 +53,7 @@ func NewPipe(driver PipeDriver, primary bool, config ConnConfig) *Pipe {
 		doneW:           make(chan struct{}),
 		writeChan:       make(chan *dns.Msg),
 	}
-	p.id = int(pipeIDGen.Add(1))
-	p.log("Pipe: loading initiated primary=%v", primary)
+	p.log("initialized primary(%v)", primary)
 
 	go p.initConn(config)
 
@@ -76,11 +76,12 @@ func (p *Pipe) initConn(cfg ConnConfig) {
 func (p *Pipe) finalize() {
 	<-p.doneR
 	<-p.doneW
-	p.log("Pipe finalize")
+	p.log("finalizing")
 	if p.conn != nil {
 		p.conn.Close()
 	}
 	p.driver = nil
+	close(p.writeChan)
 }
 
 func (p *Pipe) isWriteReady() bool {
@@ -92,14 +93,14 @@ func (p *Pipe) isWriteReady() bool {
 func (p *Pipe) setWriteReady(ready bool) {
 	p.writeLock.Lock()
 	defer p.writeLock.Unlock()
-	p.log("Pipe set W = %v", ready)
+	p.log("W-goroutine ready (%v)", ready)
 	p.writeReady = ready
 }
 
 func (p *Pipe) process(msg *dns.Msg) (*dns.Msg, error) {
-	p.log("Pipe entered: %v", msg.Question[0].Name)
+	p.log("processing message (%d, %v)", msg.Id, msg.Question[0].Name)
 	if !p.isWriteReady() {
-		p.log("Pipe W not ready")
+		p.log("W-goroutine not ready")
 		return nil, writeNotReady
 	}
 
@@ -108,16 +109,16 @@ func (p *Pipe) process(msg *dns.Msg) (*dns.Msg, error) {
 
 	select {
 	case resp := <-sender.responseChan:
-		p.log("Pipe responded %v", resp.Answer[0])
+		p.log("message responded %v", resp.Answer[0])
 		msg.Id = oldMsgID
 		resp.Id = oldMsgID
 		return resp, nil
 	case err := <-sender.errChan:
 		msg.Id = oldMsgID
-		p.log("Pipe error: %v", err)
+		p.log("message error: %v", err)
 		return nil, err
 	case <-time.After(p.reqTimeout):
-		p.log("Pipe timeouted id %d", msg.Id)
+		p.log("message timeout id(%d)", msg.Id)
 		p.cache.getAndRemove(msg.Id)
 		return nil, timeoutErr
 	}
@@ -134,7 +135,6 @@ func (p *Pipe) readLoop() {
 			if err != nil {
 				p.log("R setting deadline failed -> killing pipe")
 				p.closeRW(p.doneR, p.doneW)
-				p.log("R #")
 				return
 			}
 
@@ -146,11 +146,10 @@ func (p *Pipe) readLoop() {
 				}
 				p.log("R read failed %v -> killing pipe", err)
 				p.closeRW(p.doneR, p.doneW)
-				p.log("R #")
 				return
 			}
 
-			p.log("R Received %d", resp.Id)
+			p.log("R received (%d)", resp.Id)
 			sender := p.cache.getAndRemove(resp.Id)
 			if sender != nil {
 				sender.responseChan <- resp
@@ -163,7 +162,8 @@ func (p *Pipe) closeRW(now chan struct{}, later chan struct{}) {
 	p.setWriteReady(false)
 	safeClose(now)
 	p.driver.removePipe(p)
-	time.AfterFunc(p.finalizeTimeout, func() { safeClose(later) })
+	p.resurrectReqs()
+	safeClose(later)
 }
 
 func safeClose(ch chan struct{}) {
@@ -183,7 +183,7 @@ func (p *Pipe) writeLoop() {
 			p.log("W #")
 			return
 		case req := <-p.writeChan:
-			p.log("W receiving %d", req.Id)
+			p.log("W receiving (%d)", req.Id)
 			err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout))
 			if err != nil { //} || rand.Intn(3) != 0 {
 				p.log("W deadline failure")
@@ -198,7 +198,7 @@ func (p *Pipe) writeLoop() {
 				return
 			}
 
-			p.log("W write success %d", req.Id)
+			p.log("W write success (%d)", req.Id)
 		}
 	}
 }
@@ -215,11 +215,11 @@ func (p *Pipe) closeWriteLoop(req *dns.Msg) {
 }
 
 func (p *Pipe) resurrectReqs() {
-	p.log("Pipe resurrect requests:")
 	for {
 		select {
 		case req := <-p.writeChan:
 			if sender := p.cache.getAndRemove(req.Id); sender != nil {
+				p.log("Resurrecting request (%d)", req.Id)
 				sender.errChan <- writeNotReady
 			}
 		default:
@@ -229,11 +229,11 @@ func (p *Pipe) resurrectReqs() {
 }
 
 func (p *Pipe) log(format string, a ...any) {
-	s := time.Now().Format("00:00.0000") + fmt.Sprintf(" [%d] ", p.id) + fmt.Sprintf(format, a...)
+	s := fmt.Sprintf("%d [%d] ", time.Now().UnixNano()/1000, p.id) + fmt.Sprintf(format, a...)
 	fmt.Println(s)
 }
 
 func log(format string, a ...any) {
-	s := fmt.Sprint(time.Now().Format("00:00.000")) + " " + fmt.Sprintf(format, a...)
+	s := fmt.Sprintf("%d ", time.Now().UnixNano()/1000) + fmt.Sprintf(format, a...)
 	fmt.Println(s)
 }

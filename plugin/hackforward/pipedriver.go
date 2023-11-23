@@ -46,7 +46,7 @@ func (pd *PipeDriverImpl) removePipe(pipe *Pipe) {
 	defer pd.pipesLock.Unlock()
 	for i := 0; i < len(pd.pipes); i++ {
 		if pd.pipes[i] == pipe {
-			log("Driver: pipe removed")
+			log("Driver: pipe removed [%d]", pipe.id)
 			pd.pipes = remove(pd.pipes, i)
 			return
 		}
@@ -54,6 +54,8 @@ func (pd *PipeDriverImpl) removePipe(pipe *Pipe) {
 }
 
 func (pd *PipeDriverImpl) pipeReady(pipe *Pipe) {
+	log("Driver: pipe ready [%d]", pipe.id)
+
 	pd.pipesLock.Lock()
 	defer pd.pipesLock.Unlock()
 	pd.pipes = append(pd.pipes, pipe)
@@ -68,6 +70,8 @@ func (pd *PipeDriverImpl) pipeReady(pipe *Pipe) {
 }
 
 func (pd *PipeDriverImpl) pipeInitFailed(pipe *Pipe) {
+	log("Driver: pipe init failed [%d]", pipe.id)
+
 	NewPipe(pd, pipe.primary, pd.selectUpstream(pipe.primary))
 }
 
@@ -81,7 +85,7 @@ func (pd *PipeDriverImpl) selectUpstream(primary bool) ConnConfig {
 func (pd *PipeDriverImpl) process(msg *dns.Msg, w dns.ResponseWriter) (int, error) {
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for {
-		log("Driver: process")
+		log("Driver: process (%s)", msg.Question[0].Name)
 		var pipe *Pipe
 		pd.pipesLock.RLock()
 		if len(pd.pipes) == 0 {
