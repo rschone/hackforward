@@ -33,7 +33,7 @@ func main() {
 				fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
 				return
 			}
-			fmt.Println("Command output:\n", out.String())
+			//fmt.Println("Command output:\n", out.String())
 			time.Sleep(1000 * time.Millisecond)
 		}
 	})

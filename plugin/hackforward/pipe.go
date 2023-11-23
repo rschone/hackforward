@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -13,7 +14,10 @@ import (
 var timeoutErr = errors.New("request timeouted")
 var writeNotReady = errors.New("writer not ready")
 
+var pipeIDGen atomic.Int32
+
 type Pipe struct {
+	primary         bool
 	driver          PipeDriver
 	dialTimeout     time.Duration
 	readTimeout     time.Duration
@@ -29,25 +33,27 @@ type Pipe struct {
 	reqTimeout time.Duration
 	doneR      chan struct{}
 	doneW      chan struct{}
-	ready      chan *Pipe // channel provided by Driver to let her know that connection is ready to be used
 	cache      SenderCache
+
+	id int
 }
 
-func NewPipe(driver PipeDriver, ready chan *Pipe, config ConnConfig) *Pipe {
+func NewPipe(driver PipeDriver, primary bool, config ConnConfig) *Pipe {
 	p := Pipe{
-		cache:           SenderCache{cache: make(map[uint16]Sender)},
+		primary:         primary,
+		cache:           SenderCache{cache: make(map[uint16]*Sender)},
 		driver:          driver,
 		dialTimeout:     1 * time.Second,
 		readTimeout:     500 * time.Millisecond,
 		writeTimeout:    5 * time.Millisecond,
-		finalizeTimeout: 1 * time.Second,
+		finalizeTimeout: 2 * time.Second,
 		reqTimeout:      time.Second,
 		doneR:           make(chan struct{}),
 		doneW:           make(chan struct{}),
 		writeChan:       make(chan *dns.Msg),
-		ready:           ready,
 	}
-	//p.cache = make(map[uint16]chan *dns.Msg)
+	p.id = int(pipeIDGen.Add(1))
+	p.log("Pipe: loading initiated primary=%v", primary)
 
 	go p.initConn(config)
 
@@ -57,20 +63,24 @@ func NewPipe(driver PipeDriver, ready chan *Pipe, config ConnConfig) *Pipe {
 func (p *Pipe) initConn(cfg ConnConfig) {
 	var err error
 	if p.conn, err = dns.DialTimeout("tcp", fmt.Sprintf("%s:%d", cfg.Hostname, cfg.Port), p.dialTimeout); err != nil {
-		log("%x: Initiating connection '%s:%d' failed", p, cfg.Hostname, cfg.Port)
-		// TODO: let driver know that initialization failed
+		p.log("%x: Initiating connection '%s:%d' failed", p, cfg.Hostname, cfg.Port)
+		p.driver.pipeInitFailed(p)
 		return
 	}
 	go p.readLoop()
 	go p.writeLoop()
 	go p.finalize()
-	p.ready <- p
+	p.driver.pipeReady(p)
 }
 
 func (p *Pipe) finalize() {
 	<-p.doneR
 	<-p.doneW
-	log("Pipe finalize")
+	p.log("Pipe finalize")
+	if p.conn != nil {
+		p.conn.Close()
+	}
+	p.driver = nil
 }
 
 func (p *Pipe) isWriteReady() bool {
@@ -82,27 +92,32 @@ func (p *Pipe) isWriteReady() bool {
 func (p *Pipe) setWriteReady(ready bool) {
 	p.writeLock.Lock()
 	defer p.writeLock.Unlock()
-	log("Pipe set W = %v", ready)
+	p.log("Pipe set W = %v", ready)
 	p.writeReady = ready
 }
 
 func (p *Pipe) process(msg *dns.Msg) (*dns.Msg, error) {
-	log("Pipe entered: %v", msg.Question[0].Name)
+	p.log("Pipe entered: %v", msg.Question[0].Name)
 	if !p.isWriteReady() {
-		log("Pipe W not ready")
+		p.log("Pipe W not ready")
 		return nil, writeNotReady
 	}
 
-	oldMsgID, responseChan := p.cache.add(msg)
+	oldMsgID, sender := p.cache.add(msg)
 	p.writeChan <- msg
 
 	select {
-	case resp := <-responseChan:
-		log("Pipe responded %v", resp.Answer[0])
+	case resp := <-sender.responseChan:
+		p.log("Pipe responded %v", resp.Answer[0])
+		msg.Id = oldMsgID
 		resp.Id = oldMsgID
 		return resp, nil
+	case err := <-sender.errChan:
+		msg.Id = oldMsgID
+		p.log("Pipe error: %v", err)
+		return nil, err
 	case <-time.After(p.reqTimeout):
-		// TODO: what with the timeouted request?
+		p.log("Pipe timeouted id %d", msg.Id)
 		p.cache.getAndRemove(msg.Id)
 		return nil, timeoutErr
 	}
@@ -114,39 +129,39 @@ func (p *Pipe) readLoop() {
 		case <-p.doneR:
 			return
 		default:
-			log("R initiated")
+			p.log("R initiated")
 			err := p.conn.SetReadDeadline(time.Now().Add(p.readTimeout))
 			if err != nil {
-				log("R setting deadline failed -> killing pipe")
+				p.log("R setting deadline failed -> killing pipe")
 				p.closeRW(p.doneR, p.doneW)
-				log("R #")
+				p.log("R #")
 				return
 			}
 
 			resp, err := p.conn.ReadMsg()
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					log("R deadlined")
+					p.log("R deadlined")
 					continue
 				}
-				log("R read failed %v -> killing pipe", err)
+				p.log("R read failed %v -> killing pipe", err)
 				p.closeRW(p.doneR, p.doneW)
-				log("R #")
+				p.log("R #")
 				return
 			}
 
-			log("R Received %d", resp.Id)
-			respChan := p.cache.getAndRemove(resp.Id)
-			if respChan != nil {
-				respChan <- resp
+			p.log("R Received %d", resp.Id)
+			sender := p.cache.getAndRemove(resp.Id)
+			if sender != nil {
+				sender.responseChan <- resp
 			}
 		}
 	}
 }
 
 func (p *Pipe) closeRW(now chan struct{}, later chan struct{}) {
-	safeClose(now)
 	p.setWriteReady(false)
+	safeClose(now)
 	p.driver.removePipe(p)
 	time.AfterFunc(p.finalizeTimeout, func() { safeClose(later) })
 }
@@ -165,37 +180,60 @@ func (p *Pipe) writeLoop() {
 	for {
 		select {
 		case <-p.doneW:
-			log("W #")
+			p.log("W #")
 			return
 		case req := <-p.writeChan:
-			log("W reciving %d", req.Id)
+			p.log("W receiving %d", req.Id)
 			err := p.conn.SetWriteDeadline(time.Now().Add(p.writeTimeout))
-			if err != nil {
-				// TODO: let sender know, that it failed
-				// TODO: kill the pipe
+			if err != nil { //} || rand.Intn(3) != 0 {
+				p.log("W deadline failure")
+				p.closeWriteLoop(req)
+				return
 			}
 
 			err = p.conn.WriteMsg(req)
 			if err != nil {
-				log("W write err: %v", err)
-				// TODO: let sender know, that it failed
-				// TODO: kill the pipe
+				p.log("W write err: %v", err)
+				p.closeWriteLoop(req)
+				return
 			}
 
-			log("W write success %d", req.Id)
+			p.log("W write success %d", req.Id)
 		}
 	}
 }
 
-//func (p *Pipe) cleanup() {
-//	close(p.readChan)
-//	close(p.writeChan)
-//
-//	if p.conn != nil {
-//		p.conn.Close()
-//	}
-//}
+func (p *Pipe) closeWriteLoop(req *dns.Msg) {
+	p.setWriteReady(false)
+	p.driver.removePipe(p)
+	safeClose(p.doneW)
+	time.AfterFunc(p.finalizeTimeout, func() { safeClose(p.doneR) })
+	if sender := p.cache.getAndRemove(req.Id); sender != nil {
+		sender.errChan <- writeNotReady
+	}
+	p.resurrectReqs()
+}
+
+func (p *Pipe) resurrectReqs() {
+	p.log("Pipe resurrect requests:")
+	for {
+		select {
+		case req := <-p.writeChan:
+			if sender := p.cache.getAndRemove(req.Id); sender != nil {
+				sender.errChan <- writeNotReady
+			}
+		default:
+			return
+		}
+	}
+}
+
+func (p *Pipe) log(format string, a ...any) {
+	s := time.Now().Format("00:00.0000") + fmt.Sprintf(" [%d] ", p.id) + fmt.Sprintf(format, a...)
+	fmt.Println(s)
+}
 
 func log(format string, a ...any) {
-	fmt.Printf(format+"\n", a...)
+	s := fmt.Sprint(time.Now().Format("00:00.000")) + " " + fmt.Sprintf(format, a...)
+	fmt.Println(s)
 }

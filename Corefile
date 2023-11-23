@@ -1,11 +1,7 @@
 
 .:53 {
   hack_forward {
-    connection {
-     hostname 8.8.8.8
-     port 53
-    }
-    #upstreams 8.8.8.8,8.8.4.4   # primary & backup DNS upstreams
+    upstreams 8.8.8.8,8.8.4.4   # primary & backup DNS upstreams
     #maxReqsPerPipe 200
     #maxPipeAlive 20            # how long a pipe should stay alive in seconds
   }

@@ -5,30 +5,45 @@ import (
 	"github.com/miekg/dns"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"sync"
+	"time"
+)
+
+const (
+	PRIMARY_PIPES_MAX   = 3
+	SECONDARY_PIPES_MAX = 3
 )
 
 type PipeDriverImpl struct {
-	pipes []*Pipe
-	lock  sync.RWMutex
-	ready chan *Pipe
+	upstreams      []ConnConfig
+	primaryLimit   int
+	secondaryLimit int
+	pipes          []*Pipe
+	pipesLock      sync.RWMutex
+
+	primaryLoading   int
+	secondaryLoading int
+	loadingLock      sync.Mutex
 }
 
 type PipeDriver interface {
 	removePipe(pipe *Pipe)
+	pipeReady(pipe *Pipe)
+	pipeInitFailed(pipe *Pipe)
 	process(msg *dns.Msg, w dns.ResponseWriter) (int, error)
 }
 
-func NewDriver(connConfig ConnConfig) *PipeDriverImpl {
+func NewDriver(upstreams []ConnConfig) *PipeDriverImpl {
 	d := PipeDriverImpl{
-		ready: make(chan *Pipe),
+		upstreams:      upstreams,
+		primaryLimit:   PRIMARY_PIPES_MAX,
+		secondaryLimit: SECONDARY_PIPES_MAX,
 	}
-	go d.pipeManager(connConfig)
 	return &d
 }
 
 func (pd *PipeDriverImpl) removePipe(pipe *Pipe) {
-	pd.lock.Lock()
-	defer pd.lock.Unlock()
+	pd.pipesLock.Lock()
+	defer pd.pipesLock.Unlock()
 	for i := 0; i < len(pd.pipes); i++ {
 		if pd.pipes[i] == pipe {
 			log("Driver: pipe removed")
@@ -38,13 +53,57 @@ func (pd *PipeDriverImpl) removePipe(pipe *Pipe) {
 	}
 }
 
+func (pd *PipeDriverImpl) pipeReady(pipe *Pipe) {
+	pd.pipesLock.Lock()
+	defer pd.pipesLock.Unlock()
+	pd.pipes = append(pd.pipes, pipe)
+
+	pd.loadingLock.Lock()
+	if pipe.primary {
+		pd.primaryLoading--
+	} else {
+		pd.secondaryLoading--
+	}
+	pd.loadingLock.Unlock()
+}
+
+func (pd *PipeDriverImpl) pipeInitFailed(pipe *Pipe) {
+	NewPipe(pd, pipe.primary, pd.selectUpstream(pipe.primary))
+}
+
+func (pd *PipeDriverImpl) selectUpstream(primary bool) ConnConfig {
+	if primary || len(pd.upstreams) == 1 {
+		return pd.upstreams[0]
+	}
+	return pd.upstreams[rand.IntnRange(1, len(pd.upstreams))]
+}
+
 func (pd *PipeDriverImpl) process(msg *dns.Msg, w dns.ResponseWriter) (int, error) {
+	deadline := time.Now().Add(500 * time.Millisecond)
 	for {
-		pd.lock.RLock()
-		pipeId := rand.Intn(len(pd.pipes))
-		pipe := pd.pipes[pipeId]
-		pd.lock.RUnlock()
+		log("Driver: process")
+		var pipe *Pipe
+		pd.pipesLock.RLock()
+		if len(pd.pipes) == 0 {
+			pd.loadPipes()
+		} else {
+			pipeId := rand.Intn(len(pd.pipes))
+			pipe = pd.pipes[pipeId]
+		}
+		pd.pipesLock.RUnlock()
+
+		if pipe == nil {
+			if time.Now().Before(deadline) {
+				log("Driver: no pipe available -> retrying")
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			log("Driver: deadline exceeded")
+			return dns.RcodeServerFailure, errors.New("no pipe available")
+		}
+
 		resp, err := pipe.process(msg)
+
 		if err == nil || !errors.Is(err, writeNotReady) {
 			if err == nil {
 				if err = w.WriteMsg(resp); err != nil {
@@ -57,17 +116,43 @@ func (pd *PipeDriverImpl) process(msg *dns.Msg, w dns.ResponseWriter) (int, erro
 	}
 }
 
-func (pd *PipeDriverImpl) pipeManager(connConfig ConnConfig) {
-	NewPipe(pd, pd.ready, connConfig)
+func (pd *PipeDriverImpl) loadPipes() {
+	pd.loadingLock.Lock()
+	primary, secondary := pd.countPipes()
+	if primary == 0 {
+		loading := 0
+		for i := 0; i < pd.primaryLimit-pd.primaryLoading; i++ {
+			loading++
+			NewPipe(pd, true, pd.selectUpstream(true))
+		}
+		pd.primaryLoading = loading + pd.primaryLoading
 
-	for {
-		select {
-		case pipe := <-pd.ready:
-			pd.lock.Lock()
-			pd.pipes = append(pd.pipes, pipe)
-			pd.lock.Unlock()
+		loading = 0
+		for i := 0; i < pd.secondaryLimit-secondary-pd.secondaryLoading; i++ {
+			loading++
+			NewPipe(pd, false, pd.selectUpstream(false))
+		}
+		pd.secondaryLoading = loading + pd.secondaryLoading
+	} else {
+		loading := 0
+		for i := 0; i < pd.primaryLimit-primary-pd.primaryLoading; i++ {
+			loading++
+			NewPipe(pd, true, pd.selectUpstream(true))
+		}
+		pd.primaryLoading = loading + pd.primaryLoading
+	}
+	pd.loadingLock.Unlock()
+}
+
+func (pd *PipeDriverImpl) countPipes() (primary int, secondary int) {
+	for i := 0; i < len(pd.pipes); i++ {
+		if pd.pipes[i].primary {
+			primary++
+		} else {
+			secondary++
 		}
 	}
+	return
 }
 
 func remove[T any](slice []T, s int) []T {

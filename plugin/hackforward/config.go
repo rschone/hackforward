@@ -1,10 +1,10 @@
 package hackforward
 
 type config struct {
-	ConnConfig ConnConfig `cf:"connection"`
+	Upstreams []string `cf:"upstreams"`
 }
 
 type ConnConfig struct {
-	Hostname string `cf:"hostname"`
-	Port     int    `cf:"port"`
+	Hostname string
+	Port     int
 }
