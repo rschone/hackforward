@@ -1,8 +1,15 @@
-module forward
+module hackforward
 
 go 1.21
 
-require github.com/miekg/dns v1.1.57
+require (
+	github.com/coredns/caddy v1.1.1
+	github.com/coredns/coredns v1.11.1
+	github.com/miekg/dns v1.1.57
+	github.com/pkg/errors v0.9.1
+	github.com/stretchr/testify v1.8.4
+	k8s.io/utils v0.0.0-20230209194617-a36077c30491
+)
 
 require (
 	cloud.google.com/go/compute v1.23.0 // indirect
@@ -30,8 +37,6 @@ require (
 	github.com/aws/aws-sdk-go v1.44.322 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
-	github.com/coredns/caddy v1.1.1 // indirect
-	github.com/coredns/coredns v1.11.1 // indirect
 	github.com/coreos/go-semver v0.3.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.3.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
@@ -81,7 +86,7 @@ require (
 	github.com/oschwald/maxminddb-golang v1.11.0 // indirect
 	github.com/outcaste-io/ristretto v0.2.1 // indirect
 	github.com/philhofer/fwd v1.1.2 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.16.0 // indirect
 	github.com/prometheus/client_model v0.4.0 // indirect
 	github.com/prometheus/common v0.44.0 // indirect
@@ -128,7 +133,6 @@ require (
 	k8s.io/client-go v0.27.4 // indirect
 	k8s.io/klog/v2 v2.100.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20230501164219-8b0f38b5fd1f // indirect
-	k8s.io/utils v0.0.0-20230209194617-a36077c30491 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
 	sigs.k8s.io/yaml v1.3.0 // indirect

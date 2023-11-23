@@ -2,13 +2,15 @@ package main
 
 import (
 	"github.com/coredns/coredns/core/dnsserver"
+	_ "github.com/coredns/coredns/core/plugin"
 	"github.com/coredns/coredns/coremain"
+	_ "hackforward/plugin/hackforward"
 )
 
 func init() {
 	dnsserver.Directives = []string{
 		"log",
-		"hackforward",
+		"hack_forward",
 	}
 }
 
