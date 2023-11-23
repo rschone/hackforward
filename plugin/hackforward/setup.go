@@ -21,8 +21,15 @@ func setup(c *caddy.Controller) error {
 		return err
 	}
 
+	h := handler{}
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
-		return &handler{Next: next}
+		h.Next = next
+		return &h
+	})
+
+	c.OnStartup(func() error {
+		h.pipeDriver = NewDriver(cfg.ConnConfig)
+		return nil
 	})
 
 	return nil
