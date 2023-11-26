@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	PRIMARY_PIPES_MAX   = 3
-	SECONDARY_PIPES_MAX = 3
+	PRIMARY_PIPES_MAX   = 50
+	SECONDARY_PIPES_MAX = 50
 )
 
 type PipeDriverImpl struct {

@@ -130,7 +130,7 @@ func (p *Pipe) readLoop() {
 		case <-p.doneR:
 			return
 		default:
-			p.log("R initiated")
+			//p.log("R initiated")
 			err := p.conn.SetReadDeadline(time.Now().Add(p.readTimeout))
 			if err != nil {
 				p.log("R setting deadline failed -> killing pipe")
@@ -141,7 +141,7 @@ func (p *Pipe) readLoop() {
 			resp, err := p.conn.ReadMsg()
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					p.log("R deadlined")
+					//p.log("R deadlined")
 					continue
 				}
 				p.log("R read failed %v -> killing pipe", err)

@@ -2,15 +2,5 @@
 .:53 {
   hack_forward {
     upstreams 8.8.8.8,8.8.4.4   # primary & backup DNS upstreams
-    #maxReqsPerPipe 200
-    #maxPipeAlive 20            # how long a pipe should stay alive in seconds
   }
 }
-
-
-#.:54 {
-#  log
-#  hack_forward {
-#    upstreams 8.8.8.8 8.8.4.4   # primary & backup DNS upstreams
-#  }
-#}
